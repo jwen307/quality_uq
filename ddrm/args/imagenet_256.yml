@@ -1,0 +1,13 @@
+exp: '/storage/ddrm'
+doc: 'imagenet'
+verbose: "info"
+sample: true
+image_folder: 'test2'
+timesteps: 20
+deg: 'sr16'
+sigma_0: 0.0
+num_posteriors: 32
+eta: 0.85
+etaB: 1
+subset_start: -1
+subset_end: -1

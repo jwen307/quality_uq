@@ -1,0 +1,15 @@
+exp: '/storage/logs/ddrm'
+data_dir: '/storage/FFHQ' #/ffhq256_49k'
+doc: 'celeba'
+verbose: "info"
+sample: true
+image_folder: 'conformal'
+timesteps: 20
+deg: 'deno'
+sigma_0: 0.75
+num_posteriors: 33
+eta: 1.0
+etaB: 0.5
+subset_start: -1
+subset_end: -1
+num_samples: 5
