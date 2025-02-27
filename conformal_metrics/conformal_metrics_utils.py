@@ -145,15 +145,26 @@ class ConformalMetrics:
         # Get the processed features
         recon_preds = self.feature_preprocessor.predict(recon_preds)
 
-        # Get the quantiles
-        if self.metric == 'psnr' or self.metric == 'ssim':
-            lower = -lam + recon_preds
-            upper = np.ones_like(lower) * 50 if self.metric == 'psnr' else np.ones_like(
-                lower)  # Set to a very high value
+        if self.feature_preprocessor.method == 'nonadaptive':
+            if self.metric == 'psnr' or self.metric == 'ssim':
+                lower = lam + recon_preds
+                upper = np.ones_like(lower) * 50 if self.metric == 'psnr' else np.ones_like(
+                    lower)  # Set to a very high value
+
+            else:
+                upper = lam + recon_preds
+                lower = np.zeros_like(upper)
 
         else:
-            upper = lam + recon_preds
-            lower = np.zeros_like(upper)
+
+            if self.metric == 'psnr' or self.metric == 'ssim':
+                lower = -lam + recon_preds
+                upper = np.ones_like(lower) * 50 if self.metric == 'psnr' else np.ones_like(
+                    lower)  # Set to a very high value
+
+            else:
+                upper = lam + recon_preds
+                lower = np.zeros_like(upper)
 
         interval_size = upper - lower
 
@@ -199,11 +210,13 @@ class ConformalMetrics:
             # Get the interval
             intervals, _ = self.get_interval(recon_preds, lam)
 
+
             # Get the loss
             loss = self.get_risk(intervals, gt_preds)
 
             # Turn into a function that crosses zero
             loss = loss - ((n+1)/n*self.alpha - self.B/n)
+
 
             return loss
 

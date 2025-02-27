@@ -27,45 +27,51 @@ alpha = config['alpha']
 feature_preprocess_method = config['feature_preprocess_method']
 num_trials = config['num_trials']
 calib_split = config['calib_split']
-load_ckpt_dir = config['load_ckpt_dir']
-model_folder = os.path.basename(os.path.normpath(load_ckpt_dir))
+
+# Get the checkpoints
+load_recovery_ckpt = config['load_recovery_ckpt']
+load_posterior_ckpt = config['load_posterior_ckpt']
+recovery_model_folder = os.path.basename(os.path.normpath(load_recovery_ckpt))
+posterior_model_folder = os.path.basename(os.path.dirname(load_posterior_ckpt))
 
 # Metrics to evaluate
 metrics = ['dists', 'ssim', 'lpips', 'psnr']
 num_ps = [1, 2, 4, 8, 16, 32]   # Number of posterior samples to average over
 accels = [16, 8, 4, 2] # Accelerations to test
-num_cs = [1,2,4,8,16,32] # Number of posterior samples to use for the regressor
+num_cs = [32] #[1,2,4,8,16,32] # Number of posterior samples to use for the regressor
+
+
+def get_model_from_ckpt(ckpt_dir):
+    """
+    Get the model from the checkpoint
+    """
+
+    # Load the configureation file for the mdoel
+    ckpt_name = 'best.ckpt'
+    ckpt = os.path.join(ckpt_dir, 'checkpoints', ckpt_name)
+
+    # Get the configuration file for the model
+    config_file = os.path.join(ckpt_dir, 'configs.pkl')
+    config = helper.read_pickle(config_file)
+
+    # Get the model type
+    model_type = ckpt_dir.split('/')[-3]
+
+    # Load the model
+    print('Loading {model_type}'.format(model_type=model_type))
+    model = helper.load_model(model_type, config, ckpt)
+
+    model.eval()
+    model.cuda()
+
+    return model, model_type, config
 
 
 # %% Get the arguments for training
 if __name__ == "__main__":
 
-    # Load the configuration for the CNF
-    cnf_ckpt_name = 'best.ckpt'
-    cnf_ckpt = os.path.join(load_ckpt_dir,
-                            'checkpoints',
-                            cnf_ckpt_name)
-
-    # Get the configuration file for the CNF
-    cnf_config_file = os.path.join(load_ckpt_dir, 'configs.pkl')
-    cnf_config = helper.read_pickle(cnf_config_file)
-
-    # Get the directory of the dataset
-    base_dir = variables.fastmri_paths[cnf_config['data_args']['mri_type']]
-
-    # Get the model type
-    recon_type = load_ckpt_dir.split('/')[-3]
-
-    if recon_type == 'VarNet':
-        num_ps = [1]
-        num_cs = [1]
-
-    # Load the model
-    recon_model = helper.load_model(recon_type, cnf_config, cnf_ckpt)
-
-
-    recon_model.eval()
-    recon_model.cuda()
+    # Get the recovery type
+    recovery_type = load_recovery_ckpt.split('/')[-3]
 
     # Set up the conformal metric class for each metric
     cms = []
@@ -73,11 +79,13 @@ if __name__ == "__main__":
     gt_preds_dict = {}
     save_dirs = []
     for metric in metrics:
-        cms.append(conformal.ConformalMetrics(alpha, metric, device=recon_model.device,
+        cms.append(conformal.ConformalMetrics(alpha, metric, device='cuda',
                                               feature_preprocess_method=feature_preprocess_method,
-                                              all_features=False, k = 5))
+                                              all_features=False, k=5))
         # cm = conformal.ConformalMetrics(alpha, method, metric, loss, device=device)
-        save_dir = os.path.join(load_ckpt_dir, 'conformal_metrics', metric, )
+        # save_dir = os.path.join(load_recovery_ckpt, 'conformal_metrics', metric, )
+        proj_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        save_dir = os.path.join(proj_dir, 'results', recovery_type, metric)
         os.makedirs(save_dir, exist_ok=True)
         save_dirs.append(save_dir)
         recon_preds_dict[metric] = {}
@@ -90,74 +98,101 @@ if __name__ == "__main__":
                 recon_preds_dict[metric][accel][num_p_avg] = []
                 gt_preds_dict[metric][accel][num_p_avg] = []
 
+    # Set p to be 1 for VarNet since only generates a single sample
+    if recovery_type == 'VarNet':
+        num_ps = [1]
+
+
 
     #%% Compute posterior samples and metrics, then save the metrics to a file
     # Create the directory if it does not already exist and preprocess the files
     if not os.path.exists(os.path.join(save_dirs[0], 'recon_preds_dict.pkl')):
+
+        # Get the recovery model
+        recovery_model, recovery_type, recovery_config = get_model_from_ckpt(load_recovery_ckpt)
+
+        # Get the posterior model
+        posterior_model, posterior_type, posterior_config = get_model_from_ckpt(load_posterior_ckpt)
+
+        # Get the directory of the dataset
+        base_dir = variables.fastmri_paths[posterior_config['data_args']['mri_type']]
 
         for accel in accels:
             print('Acceleration: ', accel)
 
 
             data = FastMRIDataModule(base_dir,
-                                     batch_size=cnf_config['train_args']['batch_size'],
+                                     batch_size=recovery_config['train_args']['batch_size'],
                                      num_data_loader_workers=4,
                                      evaluating=True,
                                      specific_accel=accel,
-                                     **cnf_config['data_args'],
+                                     **recovery_config['data_args'],
                                      )
             data.prepare_data()
             data.setup()
 
             with torch.no_grad():
                 print('Getting reconstructor predictions...')
-                # TODO: Change back
-                #for i in tqdm(range(len(data.val))):
-                for i in tqdm(range(50)):
+                for i in tqdm(range(len(data.val))):
+                #for i in tqdm(range(50)):
 
                     c, x, masks, norm_val, _,_,_ = data.val[i]
-                    c = c.unsqueeze(0).to(recon_model.device)
-                    x = x.to(recon_model.device)
-                    if recon_type == 'VarNet':
-                        masks = masks.unsqueeze(0).unsqueeze(1).to(recon_model.device)
+                    c = c.unsqueeze(0).to(recovery_model.device)
+                    x = x.to(recovery_model.device)
+
+                    # VarNet needs the mask in a different format
+                    if recovery_type == 'VarNet':
+                        recovery_masks = masks.unsqueeze(0).unsqueeze(1).to(recovery_model.device)
                     else:
-                        masks = masks.to(recon_model.device)
-                    norm_val = norm_val.unsqueeze(0).to(recon_model.device)
+                        recovery_masks = masks.to(recovery_model.device)
+
+                    posterior_masks = masks.to(posterior_model.device)
+                    norm_val = norm_val.unsqueeze(0).to(recovery_model.device)
 
 
                     # Get the reconstructions
-                    samples = recon_model.reconstruct(c,
-                                              num_samples=32+128,
+                    recons = recovery_model.reconstruct(c,
+                                              num_samples=max(num_ps),
                                               temp=1.0,
                                               check=True,
                                               maps=None,
-                                              mask=masks,
+                                              mask=recovery_masks,
                                               norm_val=norm_val,
                                               split_num=8,
                                               multicoil=False,
                                               rss=True)
-                    recons = samples[0].to(recon_model.device)
+                    if recovery_type == 'VarNet':
+                        recons = recons[0].to(recovery_masks.device).unsqueeze(0).unsqueeze(0)
+                    else:
+                        recons = recons[0].to(recovery_masks.device)
+
+                    # Get the posteriors
+                    posteriors = posterior_model.reconstruct(c,
+                                                         num_samples=32,
+                                                         temp=1.0,
+                                                         check=True,
+                                                         maps=None,
+                                                         mask=posterior_masks,
+                                                         norm_val=norm_val,
+                                                         split_num=8,
+                                                         multicoil=False,
+                                                         rss=True)
+                    posteriors = posteriors[0].to(recovery_masks.device)
 
                     # Get the ground truth
                     gt = fastmri.rss_complex(network_utils.format_multicoil(network_utils.unnormalize(x.unsqueeze(0), norm_val),
-                                                                            chans=False), dim=1).to(recon_model.device)
+                                                                            chans=False), dim=1).to(recovery_model.device)
 
                     for l, metric in enumerate(metrics):
                         # Get the distribution of metrics for the posteriors and the ground truth relative to the posterior mean
                         for p, num_p_avg in enumerate(num_ps):
-                            if feature_preprocess_method == 'nonadaptive':
-                                metrics_gt = cms[l].get_posterior_mean_metrics(recons.unsqueeze(0).unsqueeze(0), None, gt)
-                                gt_preds_dict[metric][accel][num_p_avg].append(metrics_gt)
-                                metrics_p = np.zeros((1, 128))
-                                recon_preds_dict[metric][accel][num_p_avg].append(metrics_p)
-                            else:
-                                mean_p = recons[:num_p_avg].mean(dim=0).unsqueeze(0)
-                                ps = recons[32:32+128]
-                                metrics_p, metrics_gt = cms[l].get_posterior_mean_metrics(mean_p, ps, gt)
 
-                                # Log the predictions
-                                recon_preds_dict[metric][accel][num_p_avg].append(metrics_p)
-                                gt_preds_dict[metric][accel][num_p_avg].append(metrics_gt)
+                            mean_p = recons[:num_p_avg].mean(dim=0).unsqueeze(0)
+                            metrics_p, metrics_gt = cms[l].get_posterior_mean_metrics(mean_p, posteriors, gt)
+
+                            # Log the predictions
+                            recon_preds_dict[metric][accel][num_p_avg].append(metrics_p)
+                            gt_preds_dict[metric][accel][num_p_avg].append(metrics_gt)
 
             for l, metric in enumerate(metrics):
                 for num_p_avg in num_ps:
@@ -174,6 +209,7 @@ if __name__ == "__main__":
                 pickle.dump(gt_preds_dict, f)
 
 
+    # Just load the predictions if already computed
     else:
         print('Loading predictions...')
         for l, metric in enumerate(metrics):
@@ -191,6 +227,7 @@ if __name__ == "__main__":
 
 
     for l, metric in enumerate(metrics):
+        print('Metric: ', metric)
         xlim = None
         bins = None
         save_dir = save_dirs[l]
@@ -237,8 +274,16 @@ if __name__ == "__main__":
 
                 print('Num P Avg: ', num_p_avg)
 
+
                 recon_preds = recon_preds_dict[metric][accel][num_p_avg]
                 gt_preds = gt_preds_dict[metric][accel][num_p_avg]
+
+                # For the non-adpative approach, simply set all recon_preds to be 0
+                if feature_preprocess_method == 'nonadaptive':
+                    recon_preds = np.zeros((recon_preds.shape[0], 1))
+
+                # Make sure gt_preds are 1D
+                gt_preds = gt_preds.flatten()
 
 
 

@@ -22,7 +22,7 @@ import torchvision.transforms.functional as func
 
 import sys
 sys.path.append("..")
-from evals import fid, metrics
+from evals import metrics
 from util import network_utils as nu
 
 
