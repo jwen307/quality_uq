@@ -32,7 +32,7 @@ hyperparams = config['kfold_hyperparams']
 
 metrics = ['dists', 'ssim', 'lpips', 'psnr']
 num_ps = [1]
-num_cs = [1,2,4,8,16,32]
+num_cs = [32] #[1,2,4,8,16,32]
 
 if feature_preprocess_method == 'nonadaptive':
     num_cs = [1]
@@ -53,7 +53,9 @@ if __name__ == "__main__":
                                               feature_preprocess_method=feature_preprocess_method,
                                               all_features=False, k=5))
         #cm = conformal.ConformalMetrics(alpha, method, metric, loss, device=device)
-        save_dir = os.path.join(images_dir, 'conformal_metrics', metric)
+        proj_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        save_dir = os.path.join(proj_dir, 'results', 'ddrm', metric)
+        #save_dir = os.path.join(images_dir, 'conformal_metrics', metric)
         os.makedirs(save_dir, exist_ok=True)
         save_dirs.append(save_dir)
         recon_preds_dict[metric] = {}
@@ -73,7 +75,6 @@ if __name__ == "__main__":
 
 
         print('Getting classifier predictions...')
-        # TODO: Switch back
         for i in tqdm(range(len(data))):
             c, x, recons = data[i]
             c = c.unsqueeze(0).to(device)
@@ -86,7 +87,7 @@ if __name__ == "__main__":
                 for p, num_p_avg in enumerate(num_ps):
 
                     mean_p = recons[:num_p_avg].mean(dim=0).unsqueeze(0)
-                    ps = recons[32:32+128]
+                    ps = recons[1:]
                     metrics_p, metrics_gt = cms[l].get_posterior_mean_metrics(mean_p, ps, x)
 
                     # Log the predictions
@@ -144,6 +145,7 @@ if __name__ == "__main__":
 
 
     for l, metric in enumerate(metrics):
+        print('Metric: ', metric)
         xlim = None
         bins = None
 
@@ -170,6 +172,10 @@ if __name__ == "__main__":
 
             recon_preds = recon_preds[num_train:]
             gt_preds = gt_preds[num_train:]
+
+            # For the non-adpative approach, simply set all recon_preds to be 0
+            if feature_preprocess_method == 'nonadaptive':
+                recon_preds = np.zeros((recon_preds.shape[0], 1))
 
             # Train the regressor
             cm.fit_preprocessor(train_recon_preds, train_gt_preds, hyperparams=hyperparams)

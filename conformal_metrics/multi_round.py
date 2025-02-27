@@ -35,10 +35,16 @@ recovery_model_folder = os.path.basename(os.path.normpath(load_recovery_ckpt))
 posterior_model_folder = os.path.basename(os.path.dirname(load_posterior_ckpt))
 
 # Metrics to evaluate
-metrics = ['dists', 'ssim', 'lpips', 'psnr']
+metrics = ['dists'] #['dists', 'ssim', 'lpips', 'psnr']
 num_ps = [1, 2, 4, 8, 16, 32]   # Number of posterior samples to average over
 accels = [16, 8, 4, 2] # Accelerations to test
 num_cs = [32] #[1,2,4,8,16,32] # Number of posterior samples to use for the regressor
+
+
+# Parameters for this run of the multiround procedure
+num_p = 1 # Number of posterior samples to average over
+num_c = 32 # Number of samples to compare against
+tau = 0.16  # Threshold for the metric bound
 
 
 def get_model_from_ckpt(ckpt_dir):
@@ -222,164 +228,184 @@ if __name__ == "__main__":
 
 
 
-    #%% Test the conformal metrics
-    print('Testing the conformal metrics...')
+    #%% Test the multiround protocol
+    print('Testing the multiround procedure...')
 
+    all_coverages = []
+    all_avg_accels = []
+    all_num_accepted = []
 
-    for l, metric in enumerate(metrics):
-        print('Metric: ', metric)
+    for t in tqdm(range(num_trials)):
+        # Get the calibration and test splits
+        recon_preds = recon_preds_dict[metric][16][1]
+        # Total number of samples
+        n = recon_preds.shape[0]
+        # Get the number of calibration samples
+        n_cal = int(n * calib_split)
+        # Get the indices for the calibration and test sets (Keep same for all accelerations)
+        indices = np.random.permutation(n)
+        cal_indices = indices[:n_cal]
+        test_indices = indices[n_cal:]
+
+        total_test = n - n_cal
+
+        metric = metrics[0]
+        l = 0
         xlim = None
         bins = None
-        save_dir = save_dirs[l]
+        save_dir = os.path.join(save_dirs[l], 'multiround')
 
-        mean_interval_size_dict = {}
-        mean_worst_bound_dict = {}
-        std_worst_bound_dict = {} #Standard error of the mean worst bound
-        empirical_risk_std_dict = {} #Standard error of the empirical risk
-        empirical_risk_dict = {}
-        corr_dict = {}
-        mean_conditional_risk_dict = {}
-        pinball_losses_dict = {}
-        pinball_losses_std_dict = {}
+        num_accepted = [0 for _ in range(len(accels) + 1)]  # Number of samples accepted for each acceleration
+        accepted_coverages = [0 for _ in range(len(accels))]
+        slice_accels = []
+        num_in_interval = 0
 
-        for accel in accels:
-            print('Acceleration: ', accel)
+        for i, accel in enumerate(accels):
 
-            mean_interval_size_dict[f'{accel}'] = {}
-            mean_worst_bound_dict[f'{accel}'] = {}
-            std_worst_bound_dict[f'{accel}'] = {}
-            empirical_risk_std_dict[f'{accel}'] = {}
-            empirical_risk_dict[f'{accel}'] = {}
-            corr_dict[f'{accel}'] = {}
-            mean_conditional_risk_dict[f'{accel}'] = {}
-            pinball_losses_dict[f'{accel}'] = {}
-            pinball_losses_std_dict[f'{accel}'] = {}
-
-            accel_results_dir = os.path.join(save_dir, f'regressor_{feature_preprocess_method}', f'alpha{alpha}', f'accel{accel}')
+            accel_results_dir = os.path.join(save_dir, f'regressor_{feature_preprocess_method}',
+                                             f'alpha{alpha}', f'tau{tau}')
             os.makedirs(accel_results_dir, exist_ok=True)
 
-            for num_p_avg in num_ps:
-                mean_interval_size_dict[f'{accel}'][f'{num_p_avg}'] = {}
-                mean_worst_bound_dict[f'{accel}'][f'{num_p_avg}'] = {}
-                std_worst_bound_dict[f'{accel}'][f'{num_p_avg}'] = {}
-                empirical_risk_std_dict[f'{accel}'][f'{num_p_avg}'] = {}
-                empirical_risk_dict[f'{accel}'][f'{num_p_avg}'] = {}
-                corr_dict[f'{accel}'][f'{num_p_avg}'] = {}
-                mean_conditional_risk_dict[f'{accel}'][f'{num_p_avg}'] = {}
-                pinball_losses_dict[f'{accel}'][f'{num_p_avg}'] = {}
-                pinball_losses_std_dict[f'{accel}'][f'{num_p_avg}'] = {}
+            p_results_dir = os.path.join(accel_results_dir, f'num_p_avg{num_p}')
+            os.makedirs(p_results_dir, exist_ok=True)
 
-                p_results_dir = os.path.join(accel_results_dir, f'num_p_avg{num_p_avg}')
-                os.makedirs(p_results_dir, exist_ok=True)
+            recon_preds = recon_preds_dict[metric][accel][num_p]
+            gt_preds = gt_preds_dict[metric][accel][num_p]
 
-                print('Num P Avg: ', num_p_avg)
+            # train_recon_preds = recon_preds_training_dict[metric][accel][num_p]
+            # train_gt_preds = gt_preds_training_dict[metric][accel][num_p]
+
+            # For case when you want to just use the CNF for the non-adaptive approach
+            if feature_preprocess_method == 'nonadaptive':
+                recon_preds = np.zeros((recon_preds.shape[0], 1))
+                # train_recon_preds = np.zeros((train_recon_preds.shape[0], 1))
+
+            c_results_dir = os.path.join(p_results_dir, f'num_c{num_c}')
+            os.makedirs(c_results_dir, exist_ok=True)
+
+            # Get the training samples for the regressor
+            # train_recon_preds_c = train_recon_preds[:,:num_c]
+            cm = cms[l]
+            # cm.fit_preprocessor(train_recon_preds_c, train_gt_preds, hyperparams=hyperparams)
+
+            # Get the calibration and test sets
+            cal_recon_preds = recon_preds[cal_indices, :num_c]
+            cal_gt_preds = gt_preds[cal_indices].flatten()
+            test_recon_preds = recon_preds[test_indices, :num_c]
+            test_gt_preds = gt_preds[test_indices]
+
+            # Calibrate the conformal metrics
+            cm.compute_lambda(cal_recon_preds, cal_gt_preds)
+
+            # Get the bounds for the test set
+            intervals, _ = cm.conformal_inference(test_recon_preds)
+
+            # Get the bound on the interval and see if it satifies the tau threshold
+            if cm.metric == 'psnr' or cm.metric == 'ssim':
+                bound = intervals[:, 0]
+                # See which samples are above the threshold
+                accepted = bound >= tau
+
+            else:
+                bound = intervals[:, 1]
+                # See which samples are below the threshold
+                accepted = bound <= tau
+
+            # Get the number of samples that satisfy the threshold
+            num_accepted[i] = np.sum(accepted)
+
+            if any(accepted):
+
+                risk = cm.get_risk(intervals[accepted], test_gt_preds[accepted])
+
+                # Get the empirical coverage for the accepted samples
+                accepted_coverages[i] = 1 - risk
+
+                # Go through all of the accepted samples
+                accepted_intervals = intervals[accepted]
+                accepted_gt_preds = test_gt_preds[accepted]
+                for j in range(len(accepted_intervals)):
+                    if accepted_intervals[j, 0] <= accepted_gt_preds[j] and accepted_intervals[j, 1] >= accepted_gt_preds[j]:
+                        num_in_interval += 1
+
+                    # Add the slice acceleration to the list
+                    slice_accels.append(accel)
+
+            # Only keep the test samples that were not accepted for the next acceleration
+            # test_recon_preds = test_recon_preds[~accepted]
+            # test_gt_preds = test_gt_preds[~accepted]
+            test_indices = test_indices[~accepted]
+
+            # Break when all samples have been accepted
+            if test_indices.shape[0] == 0:
+                break
+
+        # Include the fully sampled images if threshold never went below tau
+        if test_indices.shape[0] > 0:
+            num_in_interval += len(test_indices)
+
+            slice_accels += [1 for _ in range(len(test_indices))]
+
+            num_accepted[-1] = len(test_indices)
+
+        # Make sure that the number of samples accepted is the same as the total number of samples
+        assert sum(num_accepted) == total_test
+
+        # Compute
+        # Empirical Coverage when each slice was accepted
+        coverage = num_in_interval / total_test
+        # print('Coverage: ', coverage)
+        all_coverages.append(coverage)
+
+        # Get the average acceleration
+        avg_accel = 1 / np.mean(1 / np.array(slice_accels))
+        # print('Average Acceleration: ', avg_accel)
+        all_avg_accels.append(avg_accel)
+
+        # Get the number of samples accepted at each acceleration rate
+        all_num_accepted.append(num_accepted)
+
+    # %% Get the average coverage and average acceleration across trials with standard error
+    print(f'Average Coverage: {np.mean(all_coverages)} +/- {np.std(all_coverages) / np.sqrt(num_trials)}')
+    print(f'Average Acceleration: {np.mean(all_avg_accels)} +/- {np.std(all_avg_accels) / np.sqrt(num_trials)}')
+
+    # Get the average number of samples accepted at each acceleration rate
+    all_percent_accepted = np.array(all_num_accepted) / total_test
+    mean_percent_accepted = np.mean(all_percent_accepted, axis=0)
+    std_error_percent_accepted = np.std(all_percent_accepted, axis=0) / np.sqrt(num_trials)
+    std_dev_percent_accepted = np.std(all_percent_accepted, axis=0)
+    print('Average Number of Samples Accepted: ', mean_percent_accepted)
+    print('Standard Error of Number of Samples Accepted: ', std_error_percent_accepted)
+    print('Standard Deviation of Number of Samples Accepted: ', std_dev_percent_accepted)
+
+    # %% Save the results
+    with open(os.path.join(c_results_dir, 'avg_coverage.txt'), 'w') as f:
+        f.write(f'Average Coverage: {np.mean(all_coverages)} +/- {np.std(all_coverages) / np.sqrt(num_trials)}')
+    with open(os.path.join(c_results_dir, 'avg_accel.txt'), 'w') as f:
+        f.write(f'Average Acceleration: {np.mean(all_avg_accels)} +/- {np.std(all_avg_accels) / np.sqrt(num_trials)}')
+    with open(os.path.join(c_results_dir, 'avg_num_accepted.pkl'), 'wb') as f:
+        pickle.dump({'mean': mean_percent_accepted, 'std_error': std_error_percent_accepted,
+                     'std_dev': std_dev_percent_accepted}, f)
 
 
-                recon_preds = recon_preds_dict[metric][accel][num_p_avg]
-                gt_preds = gt_preds_dict[metric][accel][num_p_avg]
+    #%% Save plot showing the number of samples accepted at each acceleration rate
 
-                # For the non-adpative approach, simply set all recon_preds to be 0
-                if feature_preprocess_method == 'nonadaptive':
-                    recon_preds = np.zeros((recon_preds.shape[0], 1))
+    plt.figure()
+    # Define the bard width
+    bar_width = 0.35
+    x = np.arange(1, 6)
+    r1 = x - bar_width / 2
+    r2 = x + bar_width / 2
 
-                # Make sure gt_preds are 1D
-                gt_preds = gt_preds.flatten()
+    # Plot the bars with error bars
+    plt.bar(r1, mean_percent_accepted, bar_width, yerr=std_dev_percent_accepted)
 
+    # plt.legend()
+    plt.gca().set_xticks(x)
+    plt.gca().set_xticklabels([16, 8, 4, 2, 1])
+    # plt.show()
+    plt.savefig(os.path.join(c_results_dir, f'accepted_accelerations_tau{tau}_cnf.pdf'), format='pdf', dpi=1200)
 
-
-                #%% Get the empirical coverage
-                for num_c in num_cs:
-                    print('Num C: ', num_c)
-                    c_results_dir = os.path.join(p_results_dir, f'num_c{num_c}')
-                    os.makedirs(c_results_dir, exist_ok=True)
-
-                    # Get the conformal metric object
-                    cm = cms[l]
-
-                    # Run the Monte Carlo trials
-                    risks, mean_interval_sizes, mean_worst_bounds, corrs, bin_risks, pinball_losses = cm.eval_many_trials(recon_preds, gt_preds, num_trials, calib_split=calib_split, num_c=num_c, num_bins=5, correlation=True)
-
-                    # Store the mean interval sizes
-                    mean_interval_size_dict[f'{accel}'][f'{num_p_avg}'][f'{num_c}'] = np.mean(mean_interval_sizes)
-                    mean_worst_bound_dict[f'{accel}'][f'{num_p_avg}'][f'{num_c}'] = np.mean(mean_worst_bounds)
-                    std_worst_bound_dict[f'{accel}'][f'{num_p_avg}'][f'{num_c}'] = np.std(mean_worst_bounds)/np.sqrt(len(mean_worst_bounds))
-                    empirical_risk_dict[f'{accel}'][f'{num_p_avg}'][f'{num_c}'] = np.mean(risks)
-                    empirical_risk_std_dict[f'{accel}'][f'{num_p_avg}'][f'{num_c}'] = np.std(risks)/np.sqrt(len(risks))
-                    corr_dict[f'{accel}'][f'{num_p_avg}'][f'{num_c}'] = np.mean(corrs)
-                    mean_conditional_risk_dict[f'{accel}'][f'{num_p_avg}'][f'{num_c}'] = np.mean(bin_risks, axis=0).tolist()
-                    pinball_losses_dict[f'{accel}'][f'{num_p_avg}'][f'{num_c}'] = np.mean(pinball_losses)
-                    pinball_losses_std_dict[f'{accel}'][f'{num_p_avg}'][f'{num_c}'] = np.std(pinball_losses)/np.sqrt(len(pinball_losses))
-
-
-                    with open(os.path.join(c_results_dir, f'empirical_risk_distrib'), 'w') as f:
-                        f.write('Average Risk: {0:.5f} +/- {1:.5f}\n'.format(np.mean(risks), np.std(risks)/np.sqrt(len(risks))))
-                        f.write('Average Interval Size: {0:.5f} +/- {1:.5f}\n'.format(np.mean(mean_interval_sizes), np.std(mean_interval_sizes)/np.sqrt(len(mean_interval_sizes))))
-
-
-
-                    #%% Look at the scatter plot for a single trial
-                    n = recon_preds.shape[0]
-
-                    # Get the number of calibration samples
-                    n_cal = int(n * calib_split)
-
-                    # Get the indices for the calibration and test sets
-                    indices = np.random.permutation(n)
-                    cal_indices = indices[:n_cal]
-                    test_indices = indices[n_cal:]
-
-                    # Get the calibration and test sets
-                    cal_recon_preds = recon_preds[cal_indices, :num_c]
-                    cal_gt_preds = gt_preds[cal_indices]
-                    test_recon_preds = recon_preds[test_indices, :num_c]
-                    test_gt_preds = gt_preds[test_indices]
-
-                    # Run for a single trial
-                    risk, interval_size, worst_bounds, corr, bin_risks, pinball_loss = cm.eval_single_trial(cal_recon_preds,
-                                                                                              cal_gt_preds,
-                                                                                              test_recon_preds,
-                                                                                              test_gt_preds,
-                                                                                              correlation=True)
-
-
-                    # Get a scatter plot of the true metric vs the worst case bound
-                    plt.figure()
-                    plt.rcParams.update({'font.size': 20})
-                    plt.scatter(test_gt_preds, worst_bounds)
-                    plt.axis('equal')
-                    line_min = np.min([np.min(test_gt_preds), np.min(worst_bounds)])
-                    line_max = np.max([np.max(test_gt_preds), np.max(worst_bounds)])
-                    plt.plot([line_min, line_max], [line_min, line_max], 'r-')
-                    plt.grid(alpha=0.5)
-                    #plt.title('True Metric vs Interval Bound')
-                    plt.savefig(os.path.join(c_results_dir, f'true_metric_vs_interval_bound.pdf'),
-                                format='pdf', dpi=1200)
-                    #plt.show()
-                    plt.close()
-
-
-
-        #%% Save the results
-        file_save_dir = os.path.join(save_dir,f'regressor_{feature_preprocess_method}', f'alpha{alpha}')
-
-        with open(os.path.join(file_save_dir, 'mean_interval_sizes.txt'), 'w') as f:
-            f.write(json.dumps(mean_interval_size_dict))
-        with open(os.path.join(file_save_dir, 'mean_worst_bounds.txt'), 'w') as f:
-            f.write(json.dumps(mean_worst_bound_dict))
-        with open(os.path.join(file_save_dir, 'std_worst_bounds.txt'), 'w') as f:
-            f.write(json.dumps(std_worst_bound_dict))
-        with open(os.path.join(file_save_dir, 'empirical_risk.txt'), 'w') as f:
-            f.write(json.dumps(empirical_risk_dict))
-        with open(os.path.join(file_save_dir, 'empirical_risk_std.txt'), 'w') as f:
-            f.write(json.dumps(empirical_risk_std_dict))
-        with open(os.path.join(file_save_dir, 'correlation.txt'), 'w') as f:
-            f.write(json.dumps(corr_dict))
-        with open(os.path.join(file_save_dir, 'mean_conditional_risk.txt'), 'w') as f:
-            f.write(json.dumps(mean_conditional_risk_dict))
-        with open(os.path.join(file_save_dir, 'pinball_losses.txt'), 'w') as f:
-            f.write(json.dumps(pinball_losses_dict))
-        with open(os.path.join(file_save_dir, 'pinball_losses_std.txt'), 'w') as f:
-            f.write(json.dumps(pinball_losses_std_dict))
 
 
 
