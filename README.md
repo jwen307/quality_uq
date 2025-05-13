@@ -1,7 +1,7 @@
 # Conformal Bounds on Full-Reference Image Quality for Inverse Problems
 
 ## Description
-This is the anonymized code for the paper "Conformal Bounds on Full-Reference Image Quality for Inverse Problems".
+This is the code for the paper "Conformal Bounds on Full-Reference Image Quality for Inverse Problems".
 
 ## Installation
 Please follow the instructions to setup the environment to run the repo.
